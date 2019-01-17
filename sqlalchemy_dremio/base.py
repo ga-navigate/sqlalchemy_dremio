@@ -235,7 +235,7 @@ class DremioDialect(default.DefaultDialect):
         table_names = [r[0] for r in result]
         return table_names
 
-        def get_view_names(self, connection, schema=None, **kw):
+    def get_view_names(self, connection, schema=None, **kw):
         return []
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
