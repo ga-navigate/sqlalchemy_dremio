@@ -11,8 +11,10 @@ Support for the Dremio database.
 
 
 """
+#from . import schema, sqltypes, operators, functions, visitors, \
+#    elements, selectable, crud
 from sqlalchemy import sql, schema, types, exc, pool
-from sqlalchemy.sql import compiler, expression
+from sqlalchemy.sql import compiler, expression, elements, operators
 from sqlalchemy.engine import default, base, reflection
 from sqlalchemy.engine import url as sa_url
 from sqlalchemy import processors
@@ -53,6 +55,52 @@ _type_map = {
     'ANY': types.String
 }
 
+OPERATORS = {
+    # binary
+    operators.and_: ' AND ',
+    operators.or_: ' OR ',
+    operators.add: ' + ',
+    operators.mul: ' * ',
+    operators.sub: ' - ',
+    operators.div: ' / ',
+    operators.mod: ' % ',
+    operators.truediv: ' / ',
+    operators.neg: '-',
+    operators.lt: ' < ',
+    operators.le: ' <= ',
+    operators.ne: ' != ',
+    operators.gt: ' > ',
+    operators.ge: ' >= ',
+    operators.eq: ' = ',
+    operators.is_distinct_from: ' IS DISTINCT FROM ',
+    operators.isnot_distinct_from: ' IS NOT DISTINCT FROM ',
+    operators.concat_op: ' || ',
+    operators.match_op: ' MATCH ',
+    operators.notmatch_op: ' NOT MATCH ',
+    operators.in_op: ' IN ',
+    operators.notin_op: ' NOT IN ',
+    operators.comma_op: ', ',
+    operators.from_: ' FROM ',
+    operators.as_: ' AS ',
+    operators.is_: ' IS ',
+    operators.isnot: ' IS NOT ',
+    operators.collate: ' COLLATE ',
+
+    # unary
+    operators.exists: 'EXISTS ',
+    operators.distinct_op: 'DISTINCT ',
+    operators.inv: 'NOT ',
+    operators.any_op: 'ANY ',
+    operators.all_op: 'ALL ',
+
+    # modifiers
+    operators.desc_op: ' DESC',
+    operators.asc_op: ' ASC',
+    operators.nullsfirst_op: ' NULLS FIRST',
+    operators.nullslast_op: ' NULLS LAST',
+
+}
+
 class DremioExecutionContext(default.DefaultExecutionContext):
     pass
 
@@ -75,7 +123,7 @@ class DremioCompiler(compiler.SQLCompiler):
 
 
     def visit_tablesample(self, tablesample, asfrom=False, **kw):
-        print( tablesample)
+        return ""
 
 class DremioDDLCompiler(compiler.DDLCompiler):
     def get_column_specification(self, column, **kwargs):
@@ -154,6 +202,75 @@ class DremioIdentifierPreparer(compiler.IdentifierPreparer):
         super(DremioIdentifierPreparer, self).\
                 __init__(dialect, initial_quote='[', final_quote=']')
 
+class DremioCompiler(compiler.SQLCompiler):
+
+    def visit_table(self, table, asfrom=False, **kwargs):
+        if asfrom:
+            try:
+                fixed_schema = ""
+                if table.schema != "":
+                    fixed_schema = ".".join(["`{i}`".format(i=i.replace('`', '')) for i in table.schema.split(".")])
+                fixed_table = "{fixed_schema}.`{table_name}`".format(
+                    fixed_schema=fixed_schema,table_name=table.name.replace("`", "")
+                )
+                fixed_table = fixed_table.replace("`",'"')
+                return fixed_table
+            except Exception as ex:
+                print("************************************")
+                print("Error in DrillCompiler_sadrill.visit_table :: ", str(ex))
+                print("************************************")
+        else:
+            return ""
+
+    def visit_label(self, label,
+                    add_to_result_map=None,
+                    within_label_clause=False,
+                    within_columns_clause=False,
+                    render_label_as_label=None,
+                    **kw):
+        # only render labels within the columns clause
+        # or ORDER BY clause of a select.  dialect-specific compilers
+        # can modify this behavior.
+        render_label_with_as = (within_columns_clause and not
+                                within_label_clause)
+        render_label_only = render_label_as_label is label
+
+        if render_label_only or render_label_with_as:
+            if isinstance(label.name, elements._truncated_label):
+                labelname = self._truncated_identifier("colident", label.name)
+            else:
+                labelname = label.name
+
+        if render_label_with_as:
+            if add_to_result_map is not None:
+                add_to_result_map(
+                    labelname,
+                    label.name,
+                    (label, labelname, ) + label._alt_names,
+                    label.type
+                )
+
+            x = label.element._compiler_dispatch(
+                self, within_columns_clause=True,
+                within_label_clause=True, **kw) + \
+                OPERATORS[operators.as_] + \
+                self.preparer.format_label(label, labelname)
+            x = x.replace('[','"')
+            x = x.replace(']','"')
+            return x
+        elif render_label_only:
+            x = self.preparer.format_label(label, labelname)
+            x = x.replace('[','"')
+            x = x.replace(']','"')
+            return x
+        else:
+            x = label.element._compiler_dispatch(
+                self, within_columns_clause=False, **kw)
+            x = x.replace('[','"')
+            x = x.replace(']','"')
+            return x
+
+
 class DremioDialect(default.DefaultDialect):
     name = 'dremio'
     supports_sane_rowcount = False
@@ -212,6 +329,7 @@ class DremioDialect(default.DefaultDialect):
         return bool(result)
 
     def get_columns(self, connection, table_name, schema=None, **kw):
+        table_name = schema + '.' + table_name
         q = "DESCRIBE %(table_id)s" % ({"table_id": table_name})
         cursor = connection.execute(q)
         result = []
@@ -228,6 +346,7 @@ class DremioDialect(default.DefaultDialect):
             }
             result.append(column)
         return(result)
+
 
     @reflection.cache
     def get_table_names(self, connection, schema=None, **kw):
